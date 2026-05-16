@@ -1,12 +1,12 @@
-# Ubuntu Server AMD64 on QEMU with an AMD Zen 3 Style CPU
+# Ubuntu Desktop AMD64 on QEMU with an AMD Zen 3 Style CPU
 
-A practical start-to-finish guide for installing and running Ubuntu Server AMD64 in QEMU on an Ubuntu x86_64 host.
+A practical start-to-finish guide for installing and running Ubuntu Desktop AMD64 in QEMU on an Ubuntu x86_64 host.
 
 Updated: May 2026
 
 ## What this guide builds
 
-This guide creates an Ubuntu Server AMD64 virtual machine using QEMU, KVM, UEFI firmware, virtio storage, virtio networking, VNC for installation, and SSH port forwarding for day-to-day access.
+This guide creates an Ubuntu Desktop AMD64 virtual machine using QEMU, KVM, UEFI firmware, virtio storage, virtio networking, VNC for installation, and SSH port forwarding for day-to-day access.
 
 The reliable default CPU setting is:
 
@@ -20,7 +20,7 @@ If your host is an AMD Zen 3 machine, the guest will naturally see AMD CPU featu
 
 By the end, you will have:
 
-* A bootable Ubuntu Server AMD64 VM.
+* A bootable Ubuntu Desktop AMD64 VM.
 * A qcow2 disk image.
 * OVMF UEFI firmware files.
 * A VNC installer launch command.
@@ -39,7 +39,7 @@ Host:
 
 Guest:
 
-* Ubuntu Server 24.04 LTS AMD64.
+* Ubuntu Desktop 24.04 LTS AMD64.
 * UEFI boot.
 * virtio disk and network devices.
 
@@ -54,7 +54,7 @@ This guide uses one VM workspace under your home directory:
   OVMF_CODE.fd
   OVMF_VARS.fd
   disk.qcow2
-  ubuntu-24.04.4-live-server-amd64.iso
+  ubuntu-24.04.4-live-Desktop-amd64.iso
   run-installer.sh
   run-vnc.sh
   run-headless.sh
@@ -156,7 +156,7 @@ ls -lh OVMF_CODE.fd OVMF_VARS.fd disk.qcow2
 
 Important: do not replace `OVMF_VARS.fd` after installing Ubuntu unless you intentionally want to reset the VM firmware state.
 
-## 3. Download the Ubuntu Server AMD64 ISO
+## 3. Download the Ubuntu Desktop AMD64 ISO
 
 Set the ISO filename:
 
@@ -197,7 +197,7 @@ cat > run-installer.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-ISO="${ISO:-ubuntu-24.04.4-live-server-amd64.iso}"
+ISO="${ISO:-ubuntu-24.04.4-live-Desktop-amd64.iso}"
 QEMU_BIN="${QEMU_BIN:-qemu-system-x86_64}"
 SSH_PORT="${SSH_PORT:-8023}"
 VNC_DISPLAY="${VNC_DISPLAY:-2}"
@@ -253,7 +253,7 @@ vncviewer -RemoteResize=0 127.0.0.1:5902
 
 QEMU VNC display `:2` means TCP port `5902`.
 
-## 5. Install Ubuntu Server
+## 5. Install Ubuntu Desktop
 
 Inside the installer:
 
@@ -261,7 +261,7 @@ Inside the installer:
 2. Keep DHCP networking defaults.
 3. Use the default guided storage layout unless you need custom partitions.
 4. Create your user account.
-5. Select `Install OpenSSH server`.
+5. Select `Install OpenSSH Desktop`.
 6. Finish the installation.
 
 When the installer reboots, stop QEMU with `Ctrl+C` in the terminal running `run-installer.sh`.
@@ -767,7 +767,7 @@ The installer launcher attaches the ISO and requests CD-ROM boot. The normal boo
 | `-boot order=d`                      | Boots the installer ISO first.                        | Installer only             |
 | `-device virtio-vga`                 | Display adapter for VNC.                              | Yes for VNC                |
 | `-display none`                      | Disables a local graphical window.                    | Yes for VNC-only display   |
-| `-vnc 127.0.0.1:2`                   | Starts a localhost-only VNC server.                   | Yes for VNC                |
+| `-vnc 127.0.0.1:2`                   | Starts a localhost-only VNC Desktop.                   | Yes for VNC                |
 | `-nographic`                         | Uses the terminal instead of a graphical display.     | Optional for headless boot |
 
 ## 15. Minimal command examples
@@ -817,7 +817,7 @@ Use this order when setting up the VM:
 
 1. Install packages.
 2. Create the VM workspace.
-3. Download the Ubuntu Server AMD64 ISO.
+3. Download the Ubuntu Desktop AMD64 ISO.
 4. Run `./run-installer.sh`.
 5. Connect with VNC.
 6. Install Ubuntu and enable OpenSSH.
