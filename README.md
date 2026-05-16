@@ -162,7 +162,7 @@ Set the ISO filename:
 
 ```bash
 cd ~/qemu-ubuntu-zen3
-export ISO="ubuntu-24.04.4-live-server-amd64.iso"
+export ISO="ubuntu-24.04.4-desktop-amd64.iso"
 ```
 
 Download the ISO:
