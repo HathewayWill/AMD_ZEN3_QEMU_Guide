@@ -1,14 +1,16 @@
-# Ubuntu Desktop AMD64 on QEMU
+# Ubuntu Desktop AMD64 on QEMU with SPICE
 
 A conversational, start-to-finish build and install guide
 
-Host: clean Ubuntu x86_64 • Guest: Ubuntu Desktop 24.04.4 AMD64 • UEFI + KVM + VNC + SSH port forwarding
+Host: clean Ubuntu x86_64 • Guest: Ubuntu Desktop 24.04.4 AMD64 • UEFI + KVM + SPICE + Clipboard + SSH port forwarding
 
 Updated: May 2026
 
 # 1. What you are building
 
-You will use QEMU on an x86_64 Ubuntu host to install and boot an Ubuntu Desktop AMD64 virtual machine. The VM boots via UEFI firmware, uses virtio devices for disk and networking, uses KVM for hardware acceleration, and exposes SSH to the host through a simple port forward.
+You will use QEMU on an x86_64 Ubuntu host to install and boot an Ubuntu Desktop AMD64 virtual machine. The VM boots via UEFI firmware, uses virtio devices for disk and networking, uses KVM for hardware acceleration, exposes SSH to the host through a simple port forward, and uses SPICE for the graphical console.
+
+This version uses SPICE instead of QEMU VNC. SPICE is better for a desktop VM because it supports smoother graphical interaction and, with `spice-vdagent` installed inside the guest, host-to-guest and guest-to-host clipboard sharing.
 
 This is not ARM emulation. This is an AMD64 guest running on an x86_64 host, so QEMU can use KVM and run much faster than cross-architecture emulation.
 
@@ -22,10 +24,11 @@ That exposes the real host CPU features to the guest. If the host is an AMD Zen 
 
 By the end, you will have:
 
-* A VM disk image (qcow2) containing Ubuntu Desktop AMD64.
-* Two UEFI flash images: one for firmware code (read-only) and one for UEFI variables (persistent).
-* A repeatable QEMU command line for installer boot over VNC.
-* A repeatable QEMU command line for normal boot over VNC and SSH.
+* A VM disk image, `disk.qcow2`, containing Ubuntu Desktop AMD64.
+* Two UEFI flash images: one for firmware code and one for persistent UEFI variables.
+* A repeatable QEMU command line for installer boot over SPICE.
+* A repeatable QEMU command line for normal boot over SPICE and SSH.
+* Working copy/paste between the host and guest after `spice-vdagent` is installed.
 * An optional headless command after SSH or serial console access is confirmed.
 * Optional AMD Zen 3 style CPU branding.
 
@@ -34,7 +37,7 @@ By the end, you will have:
 Everything lives under your home directory. Example paths:
 
 ```text
-~/qemu-ubuntu-amd64/                    # VM workspace (you create this)
+~/qemu-ubuntu-amd64/                    # VM workspace
   efi.img                               # UEFI firmware flash, based on OVMF_CODE_4M.fd
   varstore.img                          # UEFI variable store, based on OVMF_VARS_4M.fd
   disk.qcow2                            # VM disk
@@ -52,6 +55,7 @@ You will need:
 * KVM available on the host.
 * At least 20 GB free disk space, more if you keep snapshots or install large packages.
 * A working Internet connection to download packages and the Ubuntu ISO.
+* A SPICE viewer on the host, provided by `virt-viewer`.
 
 Tip: If your real host CPU is Intel, do not expect KVM to safely pretend it is an AMD CPU in every case. For normal use, keep `-cpu host`. Use the optional `EPYC-Milan` section only after the VM works with the default CPU setting.
 
@@ -73,9 +77,9 @@ After reboot, run:
 sudo apt update
 ```
 
-## 3.2 Install packages (QEMU + KVM + firmware + VNC viewer)
+## 3.2 Install packages
 
-Install the packages required to run QEMU with KVM acceleration, use OVMF UEFI firmware, create qcow2 disks, and connect to the installer over VNC:
+Install the packages required to run QEMU with KVM acceleration, use OVMF UEFI firmware, create qcow2 disks, download the Ubuntu ISO, and connect to the VM over SPICE:
 
 ```bash
 sudo apt install -y \
@@ -85,7 +89,7 @@ sudo apt install -y \
   ovmf \
   wget \
   ca-certificates \
-  tigervnc-viewer \
+  virt-viewer \
   cpu-checker
 ```
 
@@ -96,7 +100,7 @@ What these are for:
 * `qemu-kvm`: provides KVM integration for hardware-accelerated virtualization.
 * `ovmf`: provides x86_64 UEFI firmware files.
 * `wget` and `ca-certificates`: download the Ubuntu ISO over HTTPS.
-* `tigervnc-viewer`: lets you interact with the Ubuntu Desktop installer over VNC.
+* `virt-viewer`: provides `remote-viewer`, the SPICE viewer.
 * `cpu-checker`: provides `kvm-ok`, a quick KVM availability check.
 
 Check that KVM is available:
@@ -155,13 +159,19 @@ Example output:
 -netdev user,id=str[,ipv4=on|off]...[,...][,hostfwd=rule]...
 ```
 
-If that check does not print anything, reinstall the Ubuntu QEMU packages:
+Check that SPICE-related options are present:
+
+```bash
+qemu-system-x86_64 -help | grep -n -- "-spice"
+```
+
+If either check does not print anything, reinstall the Ubuntu QEMU packages:
 
 ```bash
 sudo apt install --reinstall -y qemu-system-x86 qemu-utils
 ```
 
-# 5. Create the VM workspace (disk + UEFI flash)
+# 5. Create the VM workspace
 
 ## 5.1 Create a directory for the VM
 
@@ -196,7 +206,7 @@ Formatting 'disk.qcow2', fmt=qcow2 cluster_size=65536 extended_l2=off compressio
 We create two flash images:
 
 * `efi.img`: contains the OVMF UEFI firmware code. We mark it read-only when launching QEMU.
-* `varstore.img`: the persistent UEFI variable store (NVRAM). This remembers boot entries and other firmware settings.
+* `varstore.img`: the persistent UEFI variable store, also known as NVRAM. This remembers boot entries and other firmware settings.
 
 Run these commands exactly:
 
@@ -251,9 +261,9 @@ sha256sum -c SHA256SUMS --ignore-missing
 
 You should see an `OK` result for the ISO file.
 
-# 7. Boot the installer (VNC)
+# 7. Boot the installer with SPICE
 
-Ubuntu Desktop uses a graphical installer. The easiest way to interact with it under QEMU is to expose a local VNC server and connect with a VNC viewer.
+Ubuntu Desktop uses a graphical installer. This guide exposes a local SPICE server and connects to it with `remote-viewer`.
 
 ## 7.1 Launch QEMU for installation
 
@@ -282,15 +292,30 @@ qemu-system-x86_64 \
   -device qemu-xhci \
   -device usb-kbd \
   -device usb-tablet \
+  -device virtio-serial-pci \
+  -chardev spicevmc,id=vdagent,name=vdagent \
+  -device virtserialport,chardev=vdagent,name=com.redhat.spice.0 \
   -display none \
-  -vnc 127.0.0.1:2
+  -spice addr=127.0.0.1,port=5930,disable-ticketing=on
 ```
 
 What to expect:
 
-* The terminal may look idle. That is normal because the UI is on VNC.
-* VNC is bound to localhost only (`127.0.0.1`). It is not exposed to the network.
-* QEMU VNC display `:2` maps to TCP port `5902`.
+* The terminal may look idle. That is normal because the UI is in the SPICE viewer.
+* SPICE is bound to localhost only, `127.0.0.1`. It is not exposed to the network.
+* The SPICE server listens on TCP port `5930`.
+* The VM also forwards host TCP port `8023` to guest TCP port `22` for SSH.
+* Clipboard sharing will not fully work until `spice-vdagent` is installed inside the guest.
+
+## 7.2 Connect to the installer over SPICE
+
+Open another host terminal and run:
+
+```bash
+remote-viewer spice://127.0.0.1:5930
+```
+
+You should see the Ubuntu installer.
 
 ## Adjusting CPU cores and memory
 
@@ -313,16 +338,6 @@ Notes that save time:
 * With KVM on the same architecture, extra vCPUs usually scale much better than ARM64-on-x86 TCG emulation.
 * Do not allocate more RAM or vCPUs than the host can comfortably spare.
 
-## 7.2 Connect to the installer over VNC
-
-Open another terminal and run:
-
-```bash
-vncviewer -RemoteResize=0 127.0.0.1:5902
-```
-
-The `-RemoteResize=0` option prevents the viewer from constantly resizing the guest display.
-
 ## 7.3 Install Ubuntu Desktop
 
 Inside the installer:
@@ -344,11 +359,11 @@ sudo systemctl enable --now ssh
 
 When the installer finishes and reboots, stop QEMU with `Ctrl+C` in the terminal running QEMU. Next, boot without the ISO.
 
-# 8. Boot the installed system (VNC + SSH)
+# 8. Boot the installed system with SPICE and SSH
 
 ## 8.1 Launch QEMU without the ISO
 
-Use this for the first installed boot because it gives you a visible console if SSH is not ready yet:
+Use this for the first installed boot because it gives you a visible desktop console if SSH is not ready yet:
 
 ```bash
 cd ~/qemu-ubuntu-amd64
@@ -368,22 +383,55 @@ qemu-system-x86_64 \
   -device qemu-xhci \
   -device usb-kbd \
   -device usb-tablet \
+  -device virtio-serial-pci \
+  -chardev spicevmc,id=vdagent,name=vdagent \
+  -device virtserialport,chardev=vdagent,name=com.redhat.spice.0 \
   -display none \
-  -vnc 127.0.0.1:2
+  -spice addr=127.0.0.1,port=5930,disable-ticketing=on
 ```
 
 Connect to the console:
 
 ```bash
-vncviewer -RemoteResize=0 127.0.0.1:5902
+remote-viewer spice://127.0.0.1:5930
 ```
 
-## 8.2 SSH into the guest
+## 8.2 Install the SPICE guest agent
+
+Inside the Ubuntu guest, install and enable the SPICE agent:
+
+```bash
+sudo apt update
+sudo apt install -y spice-vdagent
+sudo systemctl enable --now spice-vdagent
+```
+
+Reboot the guest:
+
+```bash
+sudo reboot
+```
+
+After the guest reboots, start QEMU again with the same SPICE command and reconnect:
+
+```bash
+remote-viewer spice://127.0.0.1:5930
+```
+
+Host-to-guest and guest-to-host text copy/paste should now work in the SPICE viewer.
+
+## 8.3 SSH into the guest
 
 From another host terminal:
 
 ```bash
 ssh -p 8023 <your-guest-username>@localhost
+```
+
+Example:
+
+```bash
+ssh -p 8023 workhorse@localhost
 ```
 
 Example first connection output:
@@ -396,11 +444,105 @@ Warning: Permanently added '[localhost]:8023' (ED25519) to the list of known hos
 <your-guest-username>@localhost's password:
 ```
 
-# 9. Optional headless boot
+If SSH fails with `Connection reset by peer`, the QEMU host forward probably exists, but the SSH server inside the guest is missing or not running. Open the guest through SPICE and run:
+
+```bash
+sudo apt update
+sudo apt install -y openssh-server
+sudo systemctl enable --now ssh
+sudo systemctl status ssh
+```
+
+Then try again from the host:
+
+```bash
+ssh -p 8023 <your-guest-username>@localhost
+```
+
+# 9. Copying text and files between host and guest
+
+## 9.1 Desktop copy/paste through SPICE
+
+For normal desktop text copy/paste, use SPICE with `spice-vdagent` installed in the guest.
+
+Host requirements:
+
+```bash
+sudo apt install -y virt-viewer
+```
+
+Guest requirements:
+
+```bash
+sudo apt install -y spice-vdagent
+sudo systemctl enable --now spice-vdagent
+```
+
+Then connect through:
+
+```bash
+remote-viewer spice://127.0.0.1:5930
+```
+
+Copy text on the host and paste it into the guest, or copy text in the guest and paste it back onto the host.
+
+## 9.2 Terminal paste through SSH
+
+SSH is often the easiest way to paste commands or text into the VM:
+
+```bash
+ssh -p 8023 <your-guest-username>@localhost
+```
+
+To paste a text blob into a file inside the guest:
+
+```bash
+cat > notes.txt
+```
+
+Paste the text, then press `Ctrl+D`.
+
+## 9.3 Copy files with scp
+
+From the host to the guest:
+
+```bash
+scp -P 8023 /path/on/host/file.txt <your-guest-username>@localhost:/home/<your-guest-username>/
+```
+
+Example:
+
+```bash
+scp -P 8023 ~/Downloads/test.txt workhorse@localhost:/home/workhorse/
+```
+
+For a folder:
+
+```bash
+scp -P 8023 -r ~/my-folder workhorse@localhost:/home/workhorse/
+```
+
+From the guest back to the host:
+
+```bash
+scp -P 8023 workhorse@localhost:/home/workhorse/file.txt ~/Downloads/
+```
+
+Remember: SSH uses lowercase `-p`, while `scp` uses uppercase `-P` for the port.
+
+## 9.4 Sync files with rsync
+
+For repeated copying, `rsync` is nicer:
+
+```bash
+rsync -av -e "ssh -p 8023" ~/my-folder/ workhorse@localhost:/home/workhorse/my-folder/
+```
+
+# 10. Optional headless boot
 
 Do not use headless mode as your first post-install boot unless you already know SSH works. Ubuntu Desktop is not guaranteed to show a useful serial login prompt until you configure one.
 
-## 9.1 Minimal headless command
+## 10.1 Minimal headless command
 
 ```bash
 cd ~/qemu-ubuntu-amd64
@@ -425,7 +567,7 @@ SSH in from another terminal:
 ssh -p 8023 <your-guest-username>@localhost
 ```
 
-If the VM boots but the terminal shows no login prompt, that usually means the guest was not configured for a serial console. Boot with VNC first, then configure serial output inside the guest:
+If the VM boots but the terminal shows no login prompt, that usually means the guest was not configured for a serial console. Boot with SPICE first, then configure serial output inside the guest:
 
 ```bash
 sudo systemctl enable serial-getty@ttyS0.service
@@ -436,11 +578,11 @@ sudo reboot
 
 After that, retry the headless command.
 
-# 10. Networking choices: user vs TAP/bridge vs passt
+# 11. Networking choices: user vs TAP/bridge vs passt
 
 This guide uses user-mode networking because it requires no root network setup and works almost anywhere. However, you have options.
 
-## 10.1 Option A (recommended): user-mode networking
+## 11.1 Option A: user-mode networking
 
 Keep these flags:
 
@@ -461,7 +603,7 @@ Cons:
 * Inbound connections require explicit forwarded ports.
 * Advanced networking features are limited compared with bridged networking.
 
-## 10.2 Option B: TAP/bridge networking
+## 11.2 Option B: TAP/bridge networking
 
 Use this when you want the guest to appear more like a normal machine on your LAN. It requires host setup and often root privileges.
 
@@ -481,7 +623,7 @@ Then replace the user networking flags with:
 
 If you want guest Internet through host NAT, you must also enable forwarding and add NAT rules on the host. A full bridge setup depends on your host network configuration.
 
-## 10.3 Option C: passt backend, if present
+## 11.3 Option C: passt backend, if present
 
 Some QEMU builds support a `passt` backend. Check with:
 
@@ -491,9 +633,9 @@ qemu-system-x86_64 -help | grep -n "^-netdev passt"
 
 If present, `passt` can be another host-friendly networking option. User-mode networking is still the easiest default.
 
-# 11. CPU choices: reliable default vs AMD-style branding
+# 12. CPU choices: reliable default vs AMD-style branding
 
-## 11.1 Recommended default
+## 12.1 Recommended default
 
 Use this for the VM to launch reliably with KVM:
 
@@ -503,7 +645,7 @@ Use this for the VM to launch reliably with KVM:
 
 This exposes the real host CPU to the guest. On an AMD Zen 3 host, the guest will naturally report AMD CPU features.
 
-## 11.2 Optional AMD Zen 3 style model
+## 12.2 Optional AMD Zen 3 style model
 
 If your QEMU supports the model and your KVM setup accepts it, you can try:
 
@@ -529,7 +671,7 @@ If QEMU fails to launch with an EPYC model, go back to:
 -cpu host
 ```
 
-## 11.3 Important CPU note
+## 12.3 Important CPU note
 
 With KVM, QEMU generally cannot invent a completely different CPU as freely as it can under full software emulation. If the real host CPU is Intel, forcing an AMD vendor string or an EPYC model can fail.
 
@@ -541,37 +683,77 @@ If artificial CPU branding matters more than performance, you can test TCG:
 
 That will be much slower than KVM. For normal use, keep KVM and use `-cpu host`.
 
-# 12. QEMU flags explained line-by-line
+# 13. QEMU flags explained line-by-line
 
-This section explains every QEMU flag used in the installer and normal-boot commands. For each flag we cover what it does, what virtual hardware it represents, and whether you can remove it safely.
+This section explains the main QEMU flags used in the installer and normal-boot commands. For each flag we cover what it does, what virtual hardware it represents, and whether you can remove it safely.
 
-| Flag / example | What it does | Maps to virtual hardware? | Can you remove it? |
-| --- | --- | --- | --- |
-| `-machine q35` | Selects a modern x86_64 machine model with PCIe support. | Yes: board/chipset model. | Keep it. |
-| `-accel kvm` | Uses hardware virtualization for speed. | No direct guest device; affects how QEMU executes guest code on the host. | Keep it for performance on x86_64 hosts. |
-| `-cpu host` | Exposes the real host CPU model and CPU features to the guest. | Yes: guest CPU model and features. | Keep it as the reliable default. |
-| `-smp 8` | Exposes 8 virtual CPUs to the guest. | Yes: vCPU count and topology. | Optional. Adjust to match your host. |
-| `-m 8192` | Allocates 8192 MiB of RAM to the guest. | Yes: guest RAM size. | Optional. Adjust to match your host. |
-| `-drive if=pflash,format=raw,file=efi.img,readonly=on` | Attaches UEFI firmware code and makes it read-only. | Yes: flash device holding UEFI firmware. | Keep if you want UEFI boot. |
-| `-drive if=pflash,format=raw,file=varstore.img` | Attaches the persistent UEFI variable store. | Yes: flash region for UEFI variables. | Strongly recommended. Removing it causes non-persistent firmware state. |
-| `-drive if=virtio,format=qcow2,file=disk.qcow2` | Attaches the main VM disk using virtio. | Yes: virtio block disk. | Keep for the installed OS. |
-| `-device virtio-net-pci,netdev=net0` | Adds a virtio network card connected to backend `net0`. | Yes: virtio network interface. | Optional only if you do not need networking. |
-| `-netdev user,id=net0,hostfwd=tcp::8023-:22` | Creates a user-mode NAT network backend and forwards host TCP 8023 to guest TCP 22. | Host-side network backend, not a guest device. | Optional if you switch to TAP, bridge, or passt. Keep `hostfwd` for easy SSH. |
-| `-device virtio-scsi-pci,id=scsi0` | Adds a virtio SCSI controller so the ISO can be attached as a SCSI CD-ROM. | Yes: virtio SCSI controller. | Installer-only in this guide. |
-| `-drive if=none,id=cdrom,format=raw,readonly=on,file="$ISO"` | Defines the ISO as a backend named `cdrom`. | Host-side block backend definition. | Installer-only. Remove after installation. |
-| `-device scsi-cd,drive=cdrom` | Attaches the ISO backend as a SCSI CD-ROM device. | Yes: CD-ROM device. | Installer-only. Remove after installation. |
-| `-boot order=d` | Requests CD-ROM boot first. | Firmware boot behavior. | Installer-only. Remove after installation. |
-| `-device virtio-vga` | Provides a display adapter for the VNC console. | Yes: virtual display adapter. | Keep for VNC. Remove for pure SSH/headless use. |
-| `-device qemu-xhci` | Adds a USB 3 controller. | Yes: USB controller. | Useful for VNC input. Usually safe to remove for SSH-only use. |
-| `-device usb-kbd` | Adds a USB keyboard. | Yes: USB HID keyboard. | Useful for VNC input. Usually safe to remove for SSH-only use. |
-| `-device usb-tablet` | Adds an absolute pointing device for better mouse behavior. | Yes: USB HID tablet. | Useful for VNC input. Usually safe to remove for SSH-only use. |
-| `-display none` | Prevents QEMU from opening a local GUI window. | Host UI behavior. | Optional. Keep if you only want VNC. |
-| `-vnc 127.0.0.1:2` | Starts a VNC server on localhost display `:2`, port `5902`. | Host UI behavior. | Keep for VNC. Remove if using local GUI or headless mode. |
-| `-nographic` | Disables graphics and routes serial console to your terminal. | Host console wiring. | Optional. Good after serial console is configured. |
+| Flag / example                                                   | What it does                                                                        | Maps to virtual hardware?                                                 | Can you remove it?                                                                                                   |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `-machine q35`                                                   | Selects a modern x86_64 machine model with PCIe support.                            | Yes: board/chipset model.                                                 | Keep it.                                                                                                             |
+| `-accel kvm`                                                     | Uses hardware virtualization for speed.                                             | No direct guest device; affects how QEMU executes guest code on the host. | Keep it for performance on x86_64 hosts.                                                                             |
+| `-cpu host`                                                      | Exposes the real host CPU model and CPU features to the guest.                      | Yes: guest CPU model and features.                                        | Keep it as the reliable default.                                                                                     |
+| `-smp 8`                                                         | Exposes 8 virtual CPUs to the guest.                                                | Yes: vCPU count and topology.                                             | Optional. Adjust to match your host.                                                                                 |
+| `-m 8192`                                                        | Allocates 8192 MiB of RAM to the guest.                                             | Yes: guest RAM size.                                                      | Optional. Adjust to match your host.                                                                                 |
+| `-drive if=pflash,format=raw,file=efi.img,readonly=on`           | Attaches UEFI firmware code and makes it read-only.                                 | Yes: flash device holding UEFI firmware.                                  | Keep if you want UEFI boot.                                                                                          |
+| `-drive if=pflash,format=raw,file=varstore.img`                  | Attaches the persistent UEFI variable store.                                        | Yes: flash region for UEFI variables.                                     | Strongly recommended. Removing it causes non-persistent firmware state.                                              |
+| `-drive if=virtio,format=qcow2,file=disk.qcow2`                  | Attaches the main VM disk using virtio.                                             | Yes: virtio block disk.                                                   | Keep for the installed OS.                                                                                           |
+| `-device virtio-net-pci,netdev=net0`                             | Adds a virtio network card connected to backend `net0`.                             | Yes: virtio network interface.                                            | Optional only if you do not need networking.                                                                         |
+| `-netdev user,id=net0,hostfwd=tcp::8023-:22`                     | Creates a user-mode NAT network backend and forwards host TCP 8023 to guest TCP 22. | Host-side network backend, not a guest device.                            | Optional if you switch to TAP, bridge, or passt. Keep `hostfwd` for easy SSH.                                        |
+| `-device virtio-scsi-pci,id=scsi0`                               | Adds a virtio SCSI controller so the ISO can be attached as a SCSI CD-ROM.          | Yes: virtio SCSI controller.                                              | Installer-only in this guide.                                                                                        |
+| `-drive if=none,id=cdrom,format=raw,readonly=on,file="$ISO"`     | Defines the ISO as a backend named `cdrom`.                                         | Host-side block backend definition.                                       | Installer-only. Remove after installation.                                                                           |
+| `-device scsi-cd,drive=cdrom`                                    | Attaches the ISO backend as a SCSI CD-ROM device.                                   | Yes: CD-ROM device.                                                       | Installer-only. Remove after installation.                                                                           |
+| `-boot order=d`                                                  | Requests CD-ROM boot first.                                                         | Firmware boot behavior.                                                   | Installer-only. Remove after installation.                                                                           |
+| `-device virtio-vga`                                             | Provides a display adapter for the SPICE console.                                   | Yes: virtual display adapter.                                             | Keep for SPICE graphical console. Remove for pure SSH/headless use.                                                  |
+| `-device qemu-xhci`                                              | Adds a USB 3 controller.                                                            | Yes: USB controller.                                                      | Useful for graphical input. Usually safe to remove for SSH-only use.                                                 |
+| `-device usb-kbd`                                                | Adds a USB keyboard.                                                                | Yes: USB HID keyboard.                                                    | Useful for graphical input. Usually safe to remove for SSH-only use.                                                 |
+| `-device usb-tablet`                                             | Adds an absolute pointing device for better mouse behavior.                         | Yes: USB HID tablet.                                                      | Useful for graphical input. Usually safe to remove for SSH-only use.                                                 |
+| `-device virtio-serial-pci`                                      | Adds a virtio serial controller used by the SPICE guest agent channel.              | Yes: virtio serial controller.                                            | Keep if you want SPICE clipboard integration.                                                                        |
+| `-chardev spicevmc,id=vdagent,name=vdagent`                      | Creates a SPICE virtual channel for the guest agent.                                | Host-side SPICE channel.                                                  | Keep if you want SPICE clipboard integration.                                                                        |
+| `-device virtserialport,chardev=vdagent,name=com.redhat.spice.0` | Exposes the SPICE agent channel to the guest.                                       | Yes: virtio serial port device.                                           | Keep if you want SPICE clipboard integration.                                                                        |
+| `-display none`                                                  | Prevents QEMU from opening a local GUI window.                                      | Host UI behavior.                                                         | Keep when using SPICE as the display viewer.                                                                         |
+| `-spice addr=127.0.0.1,port=5930,disable-ticketing=on`           | Starts a local SPICE server on port 5930 with no ticket password.                   | Host UI behavior.                                                         | Keep for SPICE. Consider adding authentication if exposing beyond localhost, but this guide binds only to localhost. |
+| `-nographic`                                                     | Disables graphics and routes serial console to your terminal.                       | Host console wiring.                                                      | Optional. Good after serial console is configured.                                                                   |
 
-## 12.1 Minimal recommended post-install command (safe defaults)
+# 14. Minimal recommended post-install commands
 
-Once Ubuntu is installed and you mostly live in SSH, you can simplify to the essentials:
+## 14.1 Desktop/SPICE command
+
+Use this when you want the Ubuntu graphical desktop, clipboard sharing, and SSH forwarding:
+
+```bash
+cd ~/qemu-ubuntu-amd64
+
+qemu-system-x86_64 \
+  -machine q35 \
+  -accel kvm \
+  -cpu host \
+  -smp 8 \
+  -m 8192 \
+  -drive if=pflash,format=raw,file=efi.img,readonly=on \
+  -drive if=pflash,format=raw,file=varstore.img \
+  -drive if=virtio,format=qcow2,file=disk.qcow2 \
+  -device virtio-net-pci,netdev=net0 \
+  -netdev user,id=net0,hostfwd=tcp::8023-:22 \
+  -device virtio-vga \
+  -device qemu-xhci \
+  -device usb-kbd \
+  -device usb-tablet \
+  -device virtio-serial-pci \
+  -chardev spicevmc,id=vdagent,name=vdagent \
+  -device virtserialport,chardev=vdagent,name=com.redhat.spice.0 \
+  -display none \
+  -spice addr=127.0.0.1,port=5930,disable-ticketing=on
+```
+
+Connect with:
+
+```bash
+remote-viewer spice://127.0.0.1:5930
+```
+
+## 14.2 SSH/headless command
+
+Once SSH works and you no longer need the desktop console, you can simplify to the essentials:
 
 ```bash
 cd ~/qemu-ubuntu-amd64
@@ -589,9 +771,9 @@ qemu-system-x86_64 \
   -nographic
 ```
 
-This removes installer-only devices, the CD-ROM, and VNC graphics/input, while keeping a stable UEFI + disk + network + SSH workflow. Use the VNC boot command instead if you still need the desktop console.
+This removes graphical devices, SPICE, and clipboard integration, while keeping a stable UEFI + disk + network + SSH workflow. Use the SPICE boot command instead if you still need the desktop console or graphical clipboard sharing.
 
-# 13. Troubleshooting quick hits
+# 15. Troubleshooting quick hits
 
 ## Error: `Could not access KVM kernel module`
 
@@ -622,19 +804,54 @@ Then check again:
 qemu-system-x86_64 -help | grep -n "^-netdev user"
 ```
 
-## Error: `EPYC-Milan` is not recognized
+## Error: SPICE option is not recognized
 
-List available CPU models:
-
-```bash
-qemu-system-x86_64 -cpu help | grep -i epyc
-```
-
-Use the reliable default if the model is missing or rejected:
+Check whether your QEMU build supports SPICE:
 
 ```bash
--cpu host
+qemu-system-x86_64 -help | grep -n -- "-spice"
 ```
+
+If nothing prints, reinstall QEMU from Ubuntu packages:
+
+```bash
+sudo apt install --reinstall -y qemu-system-x86
+```
+
+## `remote-viewer` command not found
+
+Install `virt-viewer` on the host:
+
+```bash
+sudo apt install -y virt-viewer
+```
+
+Then reconnect:
+
+```bash
+remote-viewer spice://127.0.0.1:5930
+```
+
+## Clipboard does not work
+
+Make sure the QEMU command includes all three SPICE agent channel lines:
+
+```bash
+-device virtio-serial-pci \
+-chardev spicevmc,id=vdagent,name=vdagent \
+-device virtserialport,chardev=vdagent,name=com.redhat.spice.0
+```
+
+Then inside the guest, install and start the agent:
+
+```bash
+sudo apt update
+sudo apt install -y spice-vdagent
+sudo systemctl enable --now spice-vdagent
+sudo reboot
+```
+
+After reboot, start QEMU again and reconnect with `remote-viewer`.
 
 ## Boot returns to installer
 
@@ -646,9 +863,36 @@ You are still booting with the ISO attached or using the installer command. Boot
 -boot order=d
 ```
 
+## SSH gives `Connection reset by peer`
+
+This usually means the host-side QEMU port forward exists, but the guest is closing port `22` because SSH is missing or not running.
+
+Open the guest through SPICE and run:
+
+```bash
+sudo apt update
+sudo apt install -y openssh-server
+sudo systemctl enable --now ssh
+sudo systemctl status ssh
+```
+
+Then from the host, try again:
+
+```bash
+ssh -p 8023 <your-guest-username>@localhost
+```
+
 ## SSH does not respond on port 8023
 
-Boot with VNC, log into the guest, and check SSH:
+First confirm QEMU is listening on the host:
+
+```bash
+ss -ltnp | grep ':8023'
+```
+
+If you see `qemu-system-x86_64`, the host forward exists.
+
+Then boot with SPICE, log into the guest, and check SSH:
 
 ```bash
 sudo systemctl status ssh
@@ -677,31 +921,23 @@ Then connect with:
 ssh -p 8024 <your-guest-username>@localhost
 ```
 
-## VNC port 5902 is already in use
+## SPICE port 5930 is already in use
 
-Pick another VNC display:
+Pick another SPICE port:
 
 ```bash
--vnc 127.0.0.1:3
+-spice addr=127.0.0.1,port=5931,disable-ticketing=on
 ```
 
 Then connect with:
 
 ```bash
-vncviewer -RemoteResize=0 127.0.0.1:5903
-```
-
-## VNC connects but the screen size is wrong
-
-Use:
-
-```bash
-vncviewer -RemoteResize=0 127.0.0.1:5902
+remote-viewer spice://127.0.0.1:5931
 ```
 
 ## Headless boot shows a blank terminal
 
-This usually means the guest is not configured to use the serial console. Boot with VNC, then configure serial output inside the guest:
+This usually means the guest is not configured to use the serial console. Boot with SPICE, then configure serial output inside the guest:
 
 ```bash
 sudo systemctl enable serial-getty@ttyS0.service
@@ -712,7 +948,7 @@ sudo reboot
 
 Then retry the headless command.
 
-# 14. Confirm system architecture and CPU model
+# 16. Confirm system architecture and CPU model
 
 This is a quick sanity check that answers three questions:
 
@@ -751,7 +987,7 @@ amd64
 
 If using `-cpu host` on an AMD host, the guest should report AMD as the CPU vendor. If using `EPYC-Milan` and the VM launches successfully, the guest should report an EPYC Milan style CPU model.
 
-# 15. Optional custom QEMU build
+# 17. Optional custom QEMU build
 
 Most users should use Ubuntu's packaged QEMU:
 
@@ -773,22 +1009,23 @@ sudo apt install -y \
   pkg-config \
   libglib2.0-dev \
   libpixman-1-dev \
-  libslirp-dev
+  libslirp-dev \
+  libspice-server-dev
 ```
 
 Clone QEMU:
 
 ```bash
 cd ~
-git clone https://git.qemu.org/git/qemu.git
+git clone https://gitlab.com/qemu-project/qemu.git
 cd qemu
 ```
 
-Configure only the x86_64 system emulator:
+Configure only the x86_64 system emulator with KVM, SLIRP/user networking, and SPICE support:
 
 ```bash
 rm -rf build
-./configure --target-list=x86_64-softmmu --enable-slirp --enable-kvm
+./configure --target-list=x86_64-softmmu --enable-slirp --enable-kvm --enable-spice
 ```
 
 Build:
@@ -809,6 +1046,12 @@ Verify user-mode networking is available:
 ~/qemu/build/qemu-system-x86_64 -help | grep -n "^-netdev user"
 ```
 
+Verify SPICE is available:
+
+```bash
+~/qemu/build/qemu-system-x86_64 -help | grep -n -- "-spice"
+```
+
 Use the custom binary by replacing `qemu-system-x86_64` with:
 
 ```bash
@@ -817,7 +1060,7 @@ Use the custom binary by replacing `qemu-system-x86_64` with:
 
 Important: if you configure QEMU only for `aarch64-softmmu`, you build `qemu-system-aarch64`, not `qemu-system-x86_64`. For this guide, you need `x86_64-softmmu`.
 
-# 16. Recommended default path
+# 18. Recommended default path
 
 Use this order when setting up the VM:
 
@@ -827,14 +1070,18 @@ Use this order when setting up the VM:
 4. Create the qcow2 disk.
 5. Copy the OVMF UEFI images to `efi.img` and `varstore.img`.
 6. Download the Ubuntu Desktop AMD64 ISO.
-7. Boot the installer command with VNC.
-8. Connect with VNC.
+7. Boot the installer command with SPICE.
+8. Connect with `remote-viewer`.
 9. Install Ubuntu and enable OpenSSH if available.
 10. Stop QEMU after the installer reboots.
-11. Boot without the ISO using the VNC boot command.
-12. SSH into the guest.
-13. Only use the headless command after SSH or serial console output is confirmed.
-14. Keep `-cpu host` as the default. Only test `EPYC-Milan` after the VM already works.
+11. Boot without the ISO using the SPICE boot command.
+12. Install `spice-vdagent` inside the guest.
+13. Reboot the guest.
+14. Reconnect through SPICE and confirm clipboard copy/paste works.
+15. Install and enable OpenSSH inside the guest if SSH does not work.
+16. SSH into the guest from the host using port `8023`.
+17. Only use the headless command after SSH or serial console output is confirmed.
+18. Keep `-cpu host` as the default. Only test `EPYC-Milan` after the VM already works.
 
 # References
 
@@ -842,4 +1089,8 @@ Ubuntu Desktop AMD64 ISO directory: [https://releases.ubuntu.com/noble/](https:/
 
 Ubuntu Desktop AMD64 ISO used here: [https://releases.ubuntu.com/noble/ubuntu-24.04.4-desktop-amd64.iso](https://releases.ubuntu.com/noble/ubuntu-24.04.4-desktop-amd64.iso)
 
-QEMU user networking documentation: [https://www.qemu.org/docs/master/system/invocation.html#hxtool-4](https://www.qemu.org/docs/master/system/invocation.html#hxtool-4) and [https://www.qemu.org/docs/master/system/net.html](https://www.qemu.org/docs/master/system/net.html)
+QEMU invocation documentation: [https://www.qemu.org/docs/master/system/invocation.html](https://www.qemu.org/docs/master/system/invocation.html)
+
+QEMU networking documentation: [https://www.qemu.org/docs/master/system/net.html](https://www.qemu.org/docs/master/system/net.html)
+
+SPICE project: [https://www.spice-space.org/](https://www.spice-space.org/)
