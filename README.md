@@ -431,7 +431,7 @@ ssh -p 8023 <your-guest-username>@localhost
 Example:
 
 ```bash
-ssh -p 8023 workhorse@localhost
+ssh -p 8023 <your_user_name>@localhost
 ```
 
 Example first connection output:
@@ -513,19 +513,19 @@ scp -P 8023 /path/on/host/file.txt <your-guest-username>@localhost:/home/<your-g
 Example:
 
 ```bash
-scp -P 8023 ~/Downloads/test.txt workhorse@localhost:/home/workhorse/
+scp -P 8023 ~/Downloads/test.txt <your_user_name>@localhost:/home/<your_user_name>/
 ```
 
 For a folder:
 
 ```bash
-scp -P 8023 -r ~/my-folder workhorse@localhost:/home/workhorse/
+scp -P 8023 -r ~/my-folder <your_user_name>@localhost:/home/<your_user_name>/
 ```
 
 From the guest back to the host:
 
 ```bash
-scp -P 8023 workhorse@localhost:/home/workhorse/file.txt ~/Downloads/
+scp -P 8023 <your_user_name>@localhost:/home/<your_user_name>/file.txt ~/Downloads/
 ```
 
 Remember: SSH uses lowercase `-p`, while `scp` uses uppercase `-P` for the port.
@@ -535,7 +535,7 @@ Remember: SSH uses lowercase `-p`, while `scp` uses uppercase `-P` for the port.
 For repeated copying, `rsync` is nicer:
 
 ```bash
-rsync -av -e "ssh -p 8023" ~/my-folder/ workhorse@localhost:/home/workhorse/my-folder/
+rsync -av -e "ssh -p 8023" ~/my-folder/ <your_user_name>@localhost:/home/<your_user_name>/my-folder/
 ```
 
 # 10. Optional headless boot
